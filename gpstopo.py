@@ -10,7 +10,9 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 import re
-
+# 在 gpstopo.py（或新建 api.py）里添加
+from flask import jsonify
+import requests, tempfile, uuid
 import pandas as pd
 from flask import (
     Flask, render_template_string, request, send_file,
@@ -19,6 +21,54 @@ from flask import (
 
 app = Flask(__name__)
 app.secret_key = "change-this-secret-key"
+
+STATIC_DIR = Path(__file__).with_name("static")
+STATIC_DIR.mkdir(exist_ok=True)
+
+TOKEN = "ERIN"            # 简单 Bearer 认证
+
+@app.route("/api/convert", methods=["POST"])
+def api_convert():
+    # 1) 简单鉴权
+    if request.headers.get("Authorization") != f"Bearer {TOKEN}":
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.json or {}
+    file_url   = data.get("file_url")
+    erp_url    = data.get("erp_url")
+    doc_type   = data.get("doc_type", "po")   # "po" | "so"
+
+    if not file_url or not erp_url:
+        return jsonify({"error": "file_url and erp_url required"}), 400
+
+    try:
+      # 2) 下载两份文件到临时目录
+      with tempfile.TemporaryDirectory() as tmp:
+          xls_path = Path(tmp) / "gps.xlsx"
+          csv_path = Path(tmp) / "erp.csv"
+          xls_path.write_bytes(requests.get(file_url).content)
+          csv_path.write_bytes(requests.get(erp_url).content)
+          erp_df = pd.read_csv(csv_path)
+  
+          # 3) 调用现有逻辑
+          with open(xls_path, "rb") as f:
+              if doc_type == "so":
+                  out_io = convert_so(f.read(), erp_df)
+              else:
+                  out_io = convert_po(f.read(), erp_df)
+  
+          # 4) 保存输出文件到静态目录，生成可公开访问的 URL
+          out_name = f"{uuid.uuid4().hex}_{doc_type.upper()}.csv"
+          out_path = STATIC_DIR / out_name
+          out_path.parent.mkdir(exist_ok=True)
+          out_path.write_bytes(out_io.getvalue())
+  
+      # 5) 把可下载链接返回给 GPT
+      return jsonify({"download_url": request.host_url + "static/" + out_name})
+    except Exception as e:
+      return jsonify({"error: ": str(e)}),500
+        
+
 
 # ─────────── 常量 & 列映射 ───────────
 STORE_NAME, CURRENCY_CODE, CURRENCY_RATE = "PORT DROP OFF", "USD", 1
