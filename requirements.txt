@@ -2,4 +2,6 @@ flask
 pandas
 openpyxl
 gunicorn
-flask\nrequests\npandas\nopenpyxl
+nrequests
+npandas
+nopenpyxl
