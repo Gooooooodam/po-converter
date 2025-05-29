@@ -10,9 +10,7 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 import re
-# 在 gpstopo.py（或新建 api.py）里添加
-from flask import jsonify
-import requests, tempfile, uuid
+from pandas.tseries.offsets import DateOffset
 import pandas as pd
 from flask import (
     Flask, render_template_string, request, send_file,
@@ -21,54 +19,6 @@ from flask import (
 
 app = Flask(__name__)
 app.secret_key = "change-this-secret-key"
-
-STATIC_DIR = Path(__file__).with_name("static")
-STATIC_DIR.mkdir(exist_ok=True)
-
-TOKEN = "ERIN"            # 简单 Bearer 认证
-
-@app.route("/api/convert", methods=["POST"])
-def api_convert():
-    # 1) 简单鉴权
-    if request.headers.get("Authorization") != f"Bearer {TOKEN}":
-        return jsonify({"error": "unauthorized"}), 401
-
-    data = request.json or {}
-    file_url   = data.get("file_url")
-    erp_url    = data.get("erp_url")
-    doc_type   = data.get("doc_type", "po")   # "po" | "so"
-
-    if not file_url or not erp_url:
-        return jsonify({"error": "file_url and erp_url required"}), 400
-
-    try:
-      # 2) 下载两份文件到临时目录
-      with tempfile.TemporaryDirectory() as tmp:
-          xls_path = Path(tmp) / "gps.xlsx"
-          csv_path = Path(tmp) / "erp.csv"
-          xls_path.write_bytes(requests.get(file_url).content)
-          csv_path.write_bytes(requests.get(erp_url).content)
-          erp_df = pd.read_csv(csv_path)
-  
-          # 3) 调用现有逻辑
-          with open(xls_path, "rb") as f:
-              if doc_type == "so":
-                  out_io = convert_so(f.read(), erp_df)
-              else:
-                  out_io = convert_po(f.read(), erp_df)
-  
-          # 4) 保存输出文件到静态目录，生成可公开访问的 URL
-          out_name = f"{uuid.uuid4().hex}_{doc_type.upper()}.csv"
-          out_path = STATIC_DIR / out_name
-          out_path.parent.mkdir(exist_ok=True)
-          out_path.write_bytes(out_io.getvalue())
-  
-      # 5) 把可下载链接返回给 GPT
-      return jsonify({"download_url": request.host_url + "static/" + out_name})
-    except Exception as e:
-      return jsonify({"error: ": str(e)}),500
-        
-
 
 # ─────────── 常量 & 列映射 ───────────
 STORE_NAME, CURRENCY_CODE, CURRENCY_RATE = "PORT DROP OFF", "USD", 1
@@ -107,8 +57,51 @@ FINAL_COLS_SO = [
 ]
 
 # ─────────── 工具函数 ───────────
-def clean_date(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce").dt.strftime("%Y-%m-%d")
+def to_datetime_any(series: pd.Series) -> pd.Series:
+    """
+    兼容普通日期字符串/真正的 datetime/Excel 序列号 (float、int、str 数字)。
+    """
+    s = pd.to_datetime(series, errors="coerce")               # 先正常解析
+    mask = s.isna() & series.notna()                          # 仅剩无法识别的
+    if mask.any():
+        num = pd.to_numeric(series[mask], errors="coerce")
+        mask_num = mask & num.notna()
+        s.loc[mask_num] = pd.to_datetime(
+            num.loc[mask_num], unit="d", origin="1899-12-30"
+        )
+    return s
+
+def adjust_dates(df: pd.DataFrame, offset_days: int = 60) -> pd.DataFrame:
+    offset = DateOffset(days=offset_days)
+    date_col = "**DateExpectedDelivery"
+    ship_col = "ExpectedShipDate"
+
+    # ── 让两列都来自同一原始字段 ──
+    if date_col not in df.columns or df[date_col].isna().all():
+        df[date_col] = df[ship_col]        # Exp or Act XFD 赋给两列
+    else:
+        df[ship_col] = df[date_col]        # 保险：保持一致
+
+    # ── 解析为真正 datetime ──
+    df[date_col] = to_datetime_any(df[date_col])
+    df[ship_col] = df[date_col]            # 先让两列完全一致
+
+    # ── 美国订单提前 60 天 ──
+    us_mask = (
+        df["Market"]
+        .fillna("")
+        .str.strip()
+        .str.upper()
+        .eq("UNITED STATES")
+        & df[date_col].notna()
+    )
+    df.loc[us_mask, [date_col, ship_col]] -= offset
+
+    # ── 输出为字符串 ──
+    df[date_col] = df[date_col].dt.strftime("%Y-%m-%d")
+    df[ship_col] = df[ship_col].dt.strftime("%Y-%m-%d")
+    return df
+
 
 def choose_vendor(desc: str) -> str:
     return VENDOR_JASAN if isinstance(desc, str) and re.search(r"(daily|value)", desc, re.I) else VENDOR_FUTURE
@@ -143,14 +136,14 @@ def build_memo(row):
 
 
 # ─────────── 基础清洗 ───────────
-def base_clean(df: pd.DataFrame) -> pd.DataFrame:
+def base_clean(df: pd.DataFrame, offset_days: int = 60) -> pd.DataFrame:
     df = df.rename(columns=COL_MAP)
     df["**StoreName"]    = STORE_NAME
     df["**CurrencyCode"] = CURRENCY_CODE
     df["**CurrencyRate"] = CURRENCY_RATE
     df["DropOffAddress"] = ""
     df["**VendorName"]   = df.get("Style Description", pd.Series()).apply(choose_vendor)
-
+    df["_RawExpectedShipDate"] = df["ExpectedShipDate"]
     df["RefNumber"] = df["Customer Order No."].fillna("").astype(str).str.strip()
     m = df["RefNumber"] == ""
     df.loc[m, "RefNumber"] = df.loc[m, "PO Reference No."].fillna("").astype(str).str.strip()
@@ -162,10 +155,7 @@ def base_clean(df: pd.DataFrame) -> pd.DataFrame:
         df["Color/Width"].astype(str).str.strip()   + "_" +
         df["Size"].astype(str).str.strip()
     )
-
-    for col in DATE_COLS & set(df.columns):
-        df[col] = clean_date(df[col])
-
+    df = adjust_dates(df, offset_days)
     df["**QtyOrder"] = pd.to_numeric(df["**QtyOrder"], errors="coerce").fillna(0).astype(int)
     return df
 
@@ -173,7 +163,7 @@ def base_clean(df: pd.DataFrame) -> pd.DataFrame:
 def merge_erp(df: pd.DataFrame, erp_df: pd.DataFrame) -> pd.DataFrame:
     need = {"ItemNumber", "Title", "StandardUnitCost"}
     if not need.issubset(erp_df.columns):
-        raise KeyError(f"Missing Columns in Xoro file: {need - set(erp_df.columns)}")
+        raise KeyError(f"ERP CSV 缺列: {need - set(erp_df.columns)}")
     cost_map  = dict(zip(erp_df["ItemNumber"], erp_df["StandardUnitCost"]))
     title_map = dict(zip(erp_df["ItemNumber"], erp_df["Title"]))
     df["**UnitPrice"] = df["**PoItemNumber"].map(cost_map).astype(float).fillna(0)
@@ -181,9 +171,9 @@ def merge_erp(df: pd.DataFrame, erp_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ─────────── PO & SO 生成 ───────────
-def convert_po(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
+def convert_po(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> BytesIO:
     df = pd.read_excel(BytesIO(po_bytes), skiprows=5, engine="openpyxl")
-    df = base_clean(df)
+    df = base_clean(df, offset_days)
     df = merge_erp(df, erp_df)
 
     df["Memo"] = df.apply(build_memo, axis=1)
@@ -197,7 +187,7 @@ def convert_po(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
 
 def convert_so(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
     df = pd.read_excel(BytesIO(po_bytes), skiprows=5, engine="openpyxl")
-    df = base_clean(df)
+    df = base_clean(df, offset_days=0)
     df = merge_erp(df, erp_df)
 
     df["**SaleStoreName"]   = STORE_NAME
@@ -211,7 +201,7 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
     df["**UnitPrice"] = 0  # SO 单价固定 0
     df["**Qty"]       = df["**QtyOrder"]      # 列名转换
     df["**ItemNumber"] = df["**PoItemNumber"]
-    df["**DateToBeShipped"] = df["**DateExpectedDelivery"]
+    df["**DateToBeShipped"] = df["_RawExpectedShipDate"]
 
     # CustomerName
     mkt = df["Market"].fillna("").astype(str).str.upper().str.strip()
@@ -247,8 +237,13 @@ HTML = """
   {% if messages %}<ul>{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
 {% endwith %}
 <form class='box' method='post' enctype='multipart/form-data'>
- <label>1️⃣ XPC GPS Report (.xlsx)</label><input type='file' name='po'  accept='.xlsx' required>
- <label>2️⃣ Xoro data file (.csv)</label><input type='file' name='erp' accept='.csv'  required><br>
+ <label>1️⃣ GPS Report (.xlsx)</label><input type='file' name='po'  accept='.xlsx' required>
+ <label>2️⃣ Xoro file (.csv)</label><input type='file' name='erp' accept='.csv'  required><br>
+ 
+  <!-- ⚠️ 新增：让用户输入提前天数（默认 60） -->
+  <label>3️⃣ Offset Days (Defalut: 60 days) </label>
+  <input type='number' name='offset_days' value='60' min='0' required>
+  
  <button formaction='/convert_po' type='submit'>Convert to PO</button>
  <button formaction='/convert_so' type='submit'>Convert to SO</button>
 </form>
@@ -264,12 +259,12 @@ def _get_files():
     po_file  = request.files.get("po")
     erp_file = request.files.get("erp")
     if not po_file or not erp_file:
-        flash("Please upload both GPS report and Xoro file: ")
+        flash("请同时上传 PO Excel 和 ERP CSV 文件")
         return None, None
     try:
         erp_df = pd.read_csv(erp_file)
     except Exception as e:
-        flash(f"Unreadable Xoro file: {e}")
+        flash(f"无法读取 ERP 文件: {e}")
         return None, None
     return po_file, erp_df
 
@@ -278,7 +273,13 @@ def route_po():
     po_file, erp_df = _get_files()
     if po_file is None: return redirect(url_for("index"))
     try:
-        csv_io = convert_po(po_file.read(), erp_df)
+        offset_days = int(request.form.get("offset_days", 0))
+        if offset_days < 0: offset_days = 0
+    except ValueError:
+        offset_days = 0
+
+    try:
+        csv_io = convert_po(po_file.read(), erp_df, offset_days)
         fn = Path(po_file.filename).stem + "_PO.csv"
         return send_file(csv_io, download_name=fn, as_attachment=True, mimetype="text/csv")
     except Exception as e:
