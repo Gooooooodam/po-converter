@@ -50,10 +50,46 @@ FINAL_COLS_PO = [
 ]
 
 FINAL_COLS_SO = [
-    "**ThirdPartyRefNo", "**SaleStoreName", "StoreName", "**CurrencyCode",
-    "**CustomerName", "CustomerPO", "**DateOrder", "**DateToBeShipped",
-    "**ExchangeRate", "Memo", "**ItemNumber", "**UnitPrice", "**Qty",
-    "OrderType", "DateToBeCancelled", "ItemUPC"
+    "**ThirdPartyRefNo", "ThirdPartySource", "ThirdPartyIconUrl", "ThirdPartyDisplayName", "**SaleStoreName",
+    "StoreName", "**CurrencyCode", "**CustomerName", "CustomerFirstName", "CustomerLastName", "CustomerMainPhone",
+    "CustomerEmailMain", "CustomerPO", "CustomerId", "CustomerAccountNumber", "**OrderDate", "**DateToBeShipped",
+    "LastDateToBeShipped", "DateToBeCancelled", "OrderClassCode", "OrderClassName", "OrderTypeCode", "OrderTypeName",
+    "**ExchangeRate", "Memo", "PaymentTermsName", "PaymentTermsType", "DepositRequiredTypeName",
+    "DepositRequiredAmount", "RefNo", "Tags", "SalesRepId", "SalesRepName", "ShipMethodName", "CarrierName",
+    "CarrierCode", "ShipServiceName", "ShipServiceCode", "FobName", "IsOrderTaxExempt", "ShippingTaxItemCode1",
+    "ShippingTaxItemValue1", "ShippingTaxItemCode2", "ShippingTaxItemValue2", "ShippingTaxItemCode3",
+    "ShippingTaxItemValue3", "ShippingTaxItemCode4", "ShippingTaxItemValue4", "ShippingTermsName",
+    "ShippingAccountNumber", "ShippingCost", "ShippingNotes", "ShipToFirstName", "ShipToLastName", "ShipToName",
+    "ShipToCompanyName", "ShipToAddr", "ShipToAddr2", "ShipToCity", "ShipToCountry", "ShipToCountryISO2", "ShipToState",
+    "ShipToStateAbbr", "ShipToZpCode", "ShipToPhoneNumber", "ShipToEmail", "ShipToAddrName", "BuyerName",
+    "BillToFirstName", "BillToLastName", "BillToName", "BillToAddr", "BillToAddr2", "BillToCity", "BillToCountry",
+    "BillToCountryISO2", "BillToState", "BillToStateAbbr", "BillToZpCode", "BillToCompanyName", "BillToPhoneNumber",
+    "BillToEmail", "BillToAddrName", "CustomerGroupName", "**ItemNumber", "ItemUpc", "ItemBrand", "Description",
+    "**UnitPrice", "**Qty", "QtyAllocated", "Discount", "DiscountTypeName", "SellUomName", "ItemNotes", "TaxItemCode1",
+    "TaxItemValue1", "TaxItemCode2", "TaxItemValue2", "TaxItemCode3", "TaxItemValue3", "TaxItemCode4", "TaxItemValue4",
+    "DepositAmount", "DepositPercentage", "DepositAccountName", "LiabilityAccountName", "PaymentMethodName",
+    "AutoDepositTotalAmount", "CustomerServiceRepId", "ItemCategoryName", "ItemGroupName", "ItemShippingCost",
+    "ItemShippingTaxItemCode1", "ItemShippingTaxItemValue1", "ItemShippingTaxItemCode2", "ItemShippingTaxItemValue2",
+    "ItemShippingTaxItemCode3", "ItemShippingTaxItemValue3", "ItemShippingTaxItemCode4", "ItemShippingTaxItemValue4",
+    "ThirdPartyTotalAmount", "ShipFromAddrName", "ShipFromFirstName", "ShipFromLastName", "ShipFromName",
+    "ShipFromAddr", "ShipFromAddr2", "ShipFromCity", "ShipFromState", "ShipFromStateAbbr", "ShipFromZpCode",
+    "ShipFromCountry", "ShipFromCountryISO2", "ShipFromPhoneNumber", "ShipFromEmail", "BaseUomCode", "SellUomCode",
+    "VASItemName", "VASItemCost", "ReCalcTaxesFlag", "ReCalcShippingTaxesFlag", "CustomerItemNumber", "IsEdiFlag",
+    "IsEdiConfirmationSentFlag", "OrderLineClassName", "OrderLineClassCode", "DefaultLocationName",
+    "QtyRemainingToShip", "AutoReleaseSalesOrder", "AutoWaveSalesOrder", "WaveAllocationCode", "AutoLockWave",
+    "LineNumber", "CustomerParentName", "EdiStatusId", "IsEdiAckRequiredFlag", "ItemIdentifierCode", "ItemUnitCost",
+    "TotalTaxAmount", "ReCalcPricing", "LineStatus", "ShipStatus", "OrderThirdPartyRefNumber", "ThirdPartyRefName",
+    "AutoApplyVASRule", "VoidAndCreate", "KeepOriginalOrderNumber", "ProductCategoryName", "AccountCode3PL",
+    "ItemQualityCode", "IsVASRequired", "VASInstruction", "AlternativeItemNumber1", "AlternativeItemNumber2",
+    "AlternativeItemNumber3", "LastShipDate", "QtyShipped", "QtyOrdered", "CancelQty", "LastWaveAttemptDttm",
+    "PickedDttm", "PackedDttm", "ReadyToShipDttm", "MinimumATSPercent", "FillRate", "FillRateFailedFlag",
+    "RequirePackAndHold", "EIN", "DutyPaymentTerms", "CustomComment", "ResidentialFlag", "PriorityCode", "Option1Value",
+    "Option1Code", "Option2Value", "Option2Code", "BasePartNumber", "ProductTitle", "PtoId", "LastWaveNumber",
+    "LastWaveDatetime", "PromiseDate", "Season", "TotalPrice", "CustomPrice1", "CustomPrice2", "CustomPrice3",
+    "CustomPrice4", "CustomPrice5", "CustomPrice6", "CustomPrice7", "CustomPrice8", "CustomPrice9", "CustomPrice10",
+    "CustomPrice11", "CustomPrice12", "CustomPrice13", "CustomPrice14", "InvoiceNumber", "ImportError", "CustomFieldH1",
+    "CustomFieldH2", "CustomFieldH3", "CustomFieldD1"
+
 ]
 
 # ─────────── 工具函数 ───────────
@@ -189,6 +225,11 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
     df = pd.read_excel(BytesIO(po_bytes), skiprows=5, engine="openpyxl")
     df = base_clean(df, offset_days=0)
     df = merge_erp(df, erp_df)
+
+    for col in FINAL_COLS_SO:
+        if col not in df.columns:
+            # 这里用 "" 填空；如果你知道某列应为数字，可改成 0
+            df[col] = ""
 
     df["**SaleStoreName"]   = STORE_NAME
     df["StoreName"]         = ""
