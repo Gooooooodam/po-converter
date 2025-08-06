@@ -22,20 +22,19 @@ app.secret_key = "change-this-secret-key"
 
 # ─────────── 常量 & 列映射 ───────────
 STORE_NAME, CURRENCY_CODE, CURRENCY_RATE = "PORT DROP OFF", "USD", 1
-VENDOR_JASAN  = "ZHEJIANG JASAN HOLDING GROUP CO., LTD"
+VENDOR_JASAN = "ZHEJIANG JASAN HOLDING GROUP CO., LTD"
 VENDOR_FUTURE = "ZHEJIANG FUTURESTITCH SPORTS CO., LTD"
 
 COL_MAP = {
-    "PO No.":              "**ThirdPartyRefNo",
-    "Vendor Short Name":   "**VendorName",
-    "PO Release Date":     "**DateOrder",
-    "Orig Req XFD":        "VendorReqDate",
-    "Curr CFM XFD":        "**DateExpectedDelivery",
-    "Exp or Act XFD":      "ExpectedShipDate",
-    "Quantity":            "**QtyOrder",
-    "Reason Remark":       "Memo",
-    "PO Reference No.":    "PO Reference No.",
-    "Customer Order No.":  "Customer Order No.",
+    "PO No.": "**ThirdPartyRefNo",
+    "Vendor Short Name": "**VendorName",
+    "PO Release Date": "**DateOrder",
+    "Orig Req XFD": "VendorReqDate",
+    "Exp or Act XFD": "ExpectedShipDate",
+    "Quantity": "**QtyOrder",
+    "Reason Remark": "Memo",
+    "PO Reference No.": "PO Reference No.",
+    "Customer Order No.": "Customer Order No.",
 }
 
 DATE_COLS = {"**DateOrder", "VendorReqDate", "**DateExpectedDelivery", "ExpectedShipDate"}
@@ -92,13 +91,14 @@ FINAL_COLS_SO = [
 
 ]
 
+
 # ─────────── 工具函数 ───────────
 def to_datetime_any(series: pd.Series) -> pd.Series:
     """
     兼容普通日期字符串/真正的 datetime/Excel 序列号 (float、int、str 数字)。
     """
-    s = pd.to_datetime(series, errors="coerce")               # 先正常解析
-    mask = s.isna() & series.notna()                          # 仅剩无法识别的
+    s = pd.to_datetime(series, errors="coerce")  # 先正常解析
+    mask = s.isna() & series.notna()  # 仅剩无法识别的
     if mask.any():
         num = pd.to_numeric(series[mask], errors="coerce")
         mask_num = mask & num.notna()
@@ -107,49 +107,21 @@ def to_datetime_any(series: pd.Series) -> pd.Series:
         )
     return s
 
-def adjust_dates(df: pd.DataFrame, offset_days: int = 60) -> pd.DataFrame:
-    offset = DateOffset(days=offset_days)
-    date_col = "**DateExpectedDelivery"
-    ship_col = "ExpectedShipDate"
-
-    # ── 让两列都来自同一原始字段 ──
-    if date_col not in df.columns or df[date_col].isna().all():
-        df[date_col] = df[ship_col]        # Exp or Act XFD 赋给两列
-    else:
-        df[ship_col] = df[date_col]        # 保险：保持一致
-
-    # ── 解析为真正 datetime ──
-    df[date_col] = to_datetime_any(df[date_col])
-    df[ship_col] = df[date_col]            # 先让两列完全一致
-
-    # ── 美国订单提前 60 天 ──
-    us_mask = (
-        df["Market"]
-        .fillna("")
-        .str.strip()
-        .str.upper()
-        .eq("UNITED STATES")
-        & df[date_col].notna()
-    )
-    df.loc[us_mask, [date_col, ship_col]] -= offset
-
-    # ── 输出为字符串 ──
-    df[date_col] = df[date_col].dt.strftime("%Y-%m-%d")
-    df[ship_col] = df[ship_col].dt.strftime("%Y-%m-%d")
-    return df
-
 
 def choose_vendor(desc: str) -> str:
     return VENDOR_JASAN if isinstance(desc, str) and re.search(r"(daily|value)", desc, re.I) else VENDOR_FUTURE
+
 
 def build_tags(identifier: str) -> str:
     if not isinstance(identifier, str): return ""
     m = HEADER_RE.match(identifier.strip())
     if not m: return ""
     q_or_s, q_digit, yy, tail = m.groups()
-    base = f"S1 {yy}" if (q_or_s.upper()=="Q" and q_digit in ("1","2")) else (f"S2 {yy}" if q_or_s.upper()=="Q" else f"S{q_digit} {yy}")
-    detail = "SPECIAL EVENTS" if tail and tail.upper()=="OC" else (f"BUY{tail}" if tail else "")
-    return base + (", "+detail if detail else "")
+    base = f"S1 {yy}" if (q_or_s.upper() == "Q" and q_digit in ("1", "2")) else (
+        f"S2 {yy}" if q_or_s.upper() == "Q" else f"S{q_digit} {yy}")
+    detail = "SPECIAL EVENTS" if tail and tail.upper() == "OC" else (f"BUY{tail}" if tail else "")
+    return base + (", " + detail if detail else "")
+
 
 def safe_str(x):
     if pd.isna(x):
@@ -158,6 +130,7 @@ def safe_str(x):
     if s.lower() in ("", "nan"):
         return ""
     return s[:-2] if s.endswith(".0") and s.replace(".", "", 1).isdigit() else s
+
 
 def build_memo(row):
     parts = [
@@ -172,44 +145,55 @@ def build_memo(row):
 
 
 # ─────────── 基础清洗 ───────────
-def base_clean(df: pd.DataFrame, offset_days: int = 60) -> pd.DataFrame:
+def base_clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=COL_MAP)
-    df["**StoreName"]    = STORE_NAME
+    df["**StoreName"] = STORE_NAME
     df["**CurrencyCode"] = CURRENCY_CODE
     df["**CurrencyRate"] = CURRENCY_RATE
     df["DropOffAddress"] = ""
-    df["**VendorName"]   = df.get("Style Description", pd.Series()).apply(choose_vendor)
+    df["**VendorName"] = df.get("Style Description", pd.Series()).apply(choose_vendor)
     df["_RawExpectedShipDate"] = df["ExpectedShipDate"]
     df["RefNumber"] = df["Customer Order No."].fillna("").astype(str).str.strip()
+    # 保证"**DateExpectedDelivery"和"ExpectedShipDate"都以"Exp or Act XFD"为准且一致
+    df["**DateExpectedDelivery"] = df["ExpectedShipDate"]
     m = df["RefNumber"] == ""
     df.loc[m, "RefNumber"] = df.loc[m, "PO Reference No."].fillna("").astype(str).str.strip()
     m = df["RefNumber"] == ""
     df.loc[m, "RefNumber"] = df.loc[m, "**ThirdPartyRefNo"].astype(str)
 
     df["**PoItemNumber"] = (
-        df["Style/Part No."].astype(str).str.strip() + "_" +
-        df["Color/Width"].astype(str).str.strip()   + "_" +
-        df["Size"].astype(str).str.strip()
+            df["Style/Part No."].astype(str).str.strip() + "_" +
+            df["Color/Width"].astype(str).str.strip() + "_" +
+            df["Size"].astype(str).str.strip()
     )
-    df = adjust_dates(df, offset_days)
     df["**QtyOrder"] = pd.to_numeric(df["**QtyOrder"], errors="coerce").fillna(0).astype(int)
+    # 让 ExpectedShipDate 跟 **DateExpectedDelivery 保持一致
+    if "**DateExpectedDelivery" in df.columns:
+        df["ExpectedShipDate"] = df["**DateExpectedDelivery"]
+
+    # 格式化日期
+    for col in ("**DateExpectedDelivery", "ExpectedShipDate", "_RawExpectedShipDate"):
+        if col in df.columns:
+            df[col] = to_datetime_any(df[col]).dt.strftime("%Y-%m-%d")
     return df
+
 
 # ─────────── 合并 ERP 单价/Title ───────────
 def merge_erp(df: pd.DataFrame, erp_df: pd.DataFrame) -> pd.DataFrame:
     need = {"ItemNumber", "Title", "StandardUnitCost"}
     if not need.issubset(erp_df.columns):
         raise KeyError(f"ERP CSV 缺列: {need - set(erp_df.columns)}")
-    cost_map  = dict(zip(erp_df["ItemNumber"], erp_df["StandardUnitCost"]))
+    cost_map = dict(zip(erp_df["ItemNumber"], erp_df["StandardUnitCost"]))
     title_map = dict(zip(erp_df["ItemNumber"], erp_df["Title"]))
     df["**UnitPrice"] = df["**PoItemNumber"].map(cost_map).astype(float).fillna(0)
-    df["ERP_Title"]   = df["**PoItemNumber"].map(title_map)
+    df["ERP_Title"] = df["**PoItemNumber"].map(title_map)
     return df
 
+
 # ─────────── PO & SO 生成 ───────────
-def convert_po(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> BytesIO:
+def convert_po(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
     df = pd.read_excel(BytesIO(po_bytes), skiprows=5, engine="openpyxl")
-    df = base_clean(df, offset_days)
+    df = base_clean(df)
     df = merge_erp(df, erp_df)
 
     df["Memo"] = df.apply(build_memo, axis=1)
@@ -221,9 +205,10 @@ def convert_po(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> Bytes
     out.seek(0)
     return out
 
-def convert_so(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
+
+def convert_so(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> BytesIO:
     df = pd.read_excel(BytesIO(po_bytes), skiprows=5, engine="openpyxl")
-    df = base_clean(df, offset_days=0)
+    df = base_clean(df)
     df = merge_erp(df, erp_df)
 
     for col in FINAL_COLS_SO:
@@ -231,34 +216,43 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame) -> BytesIO:
             # 这里用 "" 填空；如果你知道某列应为数字，可改成 0
             df[col] = ""
 
-    df["**SaleStoreName"]   = STORE_NAME
-    df["StoreName"]         = ""
-    df["**ExchangeRate"]    = 1
-    df["CustomerPO"]        = ""
-    df["OrderType"]         = ""
+    df["**SaleStoreName"] = STORE_NAME
+    df["StoreName"] = ""
+    df["**ExchangeRate"] = 1
+    df["CustomerPO"] = ""
+    df["OrderType"] = ""
     df["DateToBeCancelled"] = ""
-    df["ItemUPC"]           = ""
+    df["ItemUPC"] = ""
 
     df["**UnitPrice"] = 0  # SO 单价固定 0
-    df["**Qty"]       = df["**QtyOrder"]      # 列名转换
+    df["**Qty"] = df["**QtyOrder"]  # 列名转换
     df["**ItemNumber"] = df["**PoItemNumber"]
-    df["**DateToBeShipped"] = df["_RawExpectedShipDate"]
+    df["**DateToBeShipped"] = to_datetime_any(df["_RawExpectedShipDate"])
+
+    # CustomerName
+    us_mask = df["Market"].fillna("").str.strip().str.upper().eq("UNITED STATES")
+    offset = DateOffset(days=offset_days)
+    df.loc[us_mask, "**DateToBeShipped"] += offset
+
+    # 3. 最后格式化为字符串
+    df["**DateToBeShipped"] = df["**DateToBeShipped"].dt.strftime("%Y-%m-%d")
 
     # CustomerName
     mkt = df["Market"].fillna("").astype(str).str.upper().str.strip()
-    df["**CustomerName"] = ["NEW BALANCE US" if m=="UNITED STATES" else f"NEW BALANCE {m}" for m in mkt]
+    df["**CustomerName"] = ["NEW BALANCE US" if m == "UNITED STATES" else f"NEW BALANCE {m}" for m in mkt]
 
     # Memo = ERP Title + PO Header Identifier
     df["Style Description"] = df["ERP_Title"].fillna(df["Style Description"])
     df["Memo"] = (
-        df["Style Description"].fillna("").astype(str).str.strip() + ", " +
-        df["PO Header Identifier"].fillna("").astype(str).str.strip()
+            df["Style Description"].fillna("").astype(str).str.strip() + ", " +
+            df["PO Header Identifier"].fillna("").astype(str).str.strip()
     ).str.strip(", ")
 
     out = BytesIO()
     df[FINAL_COLS_SO].to_csv(out, index=False, encoding="utf-8")
     out.seek(0)
     return out
+
 
 # ─────────── 前端 HTML ───────────
 HTML = """
@@ -280,11 +274,11 @@ HTML = """
 <form class='box' method='post' enctype='multipart/form-data'>
  <label>1️⃣ GPS Report (.xlsx)</label><input type='file' name='po'  accept='.xlsx' required>
  <label>2️⃣ Xoro file (.csv)</label><input type='file' name='erp' accept='.csv'  required><br>
- 
+
   <!-- ⚠️ 新增：让用户输入提前天数（默认 60） -->
   <label>3️⃣ Offset Days (Defalut: 60 days) </label>
   <input type='number' name='offset_days' value='60' min='0' required>
-  
+
  <button formaction='/convert_po' type='submit'>Convert to PO</button>
  <button formaction='/convert_so' type='submit'>Convert to SO</button>
 </form>
@@ -292,12 +286,14 @@ HTML = """
 </body></html>
 """
 
+
 @app.route("/")
 def index():
     return render_template_string(HTML, year=datetime.now().year)
 
+
 def _get_files():
-    po_file  = request.files.get("po")
+    po_file = request.files.get("po")
     erp_file = request.files.get("erp")
     if not po_file or not erp_file:
         flash("请同时上传 PO Excel 和 ERP CSV 文件")
@@ -308,6 +304,7 @@ def _get_files():
         flash(f"无法读取 ERP 文件: {e}")
         return None, None
     return po_file, erp_df
+
 
 @app.route("/convert_po", methods=["POST"])
 def route_po():
@@ -320,22 +317,32 @@ def route_po():
         offset_days = 0
 
     try:
-        csv_io = convert_po(po_file.read(), erp_df, offset_days)
+        csv_io = convert_po(po_file.read(), erp_df)
         fn = Path(po_file.filename).stem + "_PO.csv"
         return send_file(csv_io, download_name=fn, as_attachment=True, mimetype="text/csv")
     except Exception as e:
-        flash(str(e)); return redirect(url_for("index"))
+        flash(str(e));
+        return redirect(url_for("index"))
+
 
 @app.route("/convert_so", methods=["POST"])
 def route_so():
     po_file, erp_df = _get_files()
     if po_file is None: return redirect(url_for("index"))
     try:
-        csv_io = convert_so(po_file.read(), erp_df)
+        offset_days = int(request.form.get("offset_days", 0))
+        if offset_days < 0: offset_days = 0
+    except ValueError:
+        offset_days = 0
+    try:
+        csv_io = convert_so(po_file.read(), erp_df, offset_days)
         fn = Path(po_file.filename).stem + "_SO.csv"
         return send_file(csv_io, download_name=fn, as_attachment=True, mimetype="text/csv")
     except Exception as e:
-        flash(str(e)); return redirect(url_for("index"))
+        flash(str(e));
+        return redirect(url_for("index"))
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
