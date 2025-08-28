@@ -242,6 +242,10 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> Bytes
     df["DateToBeCancelled"] = ""
     df["ItemUPC"] = ""
 
+    # OrderDate = 当前日期（格式化为 YYYY-MM-DD）
+    df["**OrderDate"] = datetime.now().strftime("%Y-%m-%d")
+
+
     # SO 单价固定 0；Qty 映射；ItemNumber 来自 PO 的 PoItemNumber
     df["**UnitPrice"] = 0
     df["**Qty"] = df["**QtyOrder"]
@@ -373,5 +377,6 @@ def route_so():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
 
 
