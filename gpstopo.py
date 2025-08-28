@@ -143,6 +143,23 @@ def build_memo(row):
     ]
     return ", ".join([p for p in parts if p])
 
+def map_refno(row):
+    """SO 的 RefNo 依据 Region:
+       - INTNI → Customer Order No.
+       - U.S.、CAN → PO No.（即 **ThirdPartyRefNo）
+       - UK → PO Reference No.
+       其余/缺失时回退到 **ThirdPartyRefNo
+    """
+    region = safe_str(row.get("Region")).upper()
+    if region == "INTNI":
+        return safe_str(row.get("Customer Order No."))
+    elif region in {"U.S.", "US", "UNITED STATES", "CAN", "CANADA"}:
+        return safe_str(row.get("**ThirdPartyRefNo"))  # PO No. 的重命名列
+    elif region in {"UK", "UNITED KINGDOM"}:
+        return safe_str(row.get("PO Reference No."))
+    else:
+        return safe_str(row.get("**ThirdPartyRefNo"))
+
 
 # ─────────── 基础清洗 ───────────
 def base_clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -211,11 +228,12 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> Bytes
     df = base_clean(df)
     df = merge_erp(df, erp_df)
 
+    # 补齐 SO 所需列（无则置空）
     for col in FINAL_COLS_SO:
         if col not in df.columns:
-            # 这里用 "" 填空；如果你知道某列应为数字，可改成 0
             df[col] = ""
 
+    # 基础默认值
     df["**SaleStoreName"] = STORE_NAME
     df["StoreName"] = ""
     df["**ExchangeRate"] = 1
@@ -224,34 +242,44 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> Bytes
     df["DateToBeCancelled"] = ""
     df["ItemUPC"] = ""
 
-    df["**UnitPrice"] = 0  # SO 单价固定 0
-    df["**Qty"] = df["**QtyOrder"]  # 列名转换
+    # SO 单价固定 0；Qty 映射；ItemNumber 来自 PO 的 PoItemNumber
+    df["**UnitPrice"] = 0
+    df["**Qty"] = df["**QtyOrder"]
     df["**ItemNumber"] = df["**PoItemNumber"]
-    df["**DateToBeShipped"] = to_datetime_any(df["_RawExpectedShipDate"])
 
-    # CustomerName
+    # 发货日期：先从 _RawExpectedShipDate 解析；US 市场加 offset
+    df["**DateToBeShipped"] = to_datetime_any(df["_RawExpectedShipDate"])
     us_mask = df["Market"].fillna("").str.strip().str.upper().eq("UNITED STATES")
     offset = DateOffset(days=offset_days)
     df.loc[us_mask, "**DateToBeShipped"] += offset
-
-    # 3. 最后格式化为字符串
     df["**DateToBeShipped"] = df["**DateToBeShipped"].dt.strftime("%Y-%m-%d")
 
-    # CustomerName
+    # CustomerName：沿用你原来的 Market → NEW BALANCE {Market} 逻辑（US 特殊为 NEW BALANCE US）
     mkt = df["Market"].fillna("").astype(str).str.upper().str.strip()
     df["**CustomerName"] = ["NEW BALANCE US" if m == "UNITED STATES" else f"NEW BALANCE {m}" for m in mkt]
 
-    # Memo = ERP Title + PO Header Identifier
+    # ===== 关键变更开始 =====
+    # 1) RefNo：按 Region 映射
+    df["RefNo"] = df.apply(map_refno, axis=1)
+
+    # 2) Tags：与 PO 一致（基于 PO Header Identifier）
+    df["Tags"] = df["PO Header Identifier"].apply(build_tags)
+
+    # 3) Memo：与 PO 一致（用 build_memo）
+    df["Memo"] = df.apply(build_memo, axis=1)
+
+    # 4) SalesRepId：固定写入 "SR"
+    df["SalesRepId"] = "SR"
+    # ===== 关键变更结束 =====
+
+    # 为了让 Memo 中的 Style Description 有值时更友好，仍保留 ERP 标题对 Style Description 的回填（不影响上面的 Memo）
     df["Style Description"] = df["ERP_Title"].fillna(df["Style Description"])
-    df["Memo"] = (
-            df["Style Description"].fillna("").astype(str).str.strip() + ", " +
-            df["PO Header Identifier"].fillna("").astype(str).str.strip()
-    ).str.strip(", ")
 
     out = BytesIO()
     df[FINAL_COLS_SO].to_csv(out, index=False, encoding="utf-8")
     out.seek(0)
     return out
+
 
 
 # ─────────── 前端 HTML ───────────
@@ -345,4 +373,5 @@ def route_so():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
 
