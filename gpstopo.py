@@ -260,7 +260,7 @@ def convert_so(po_bytes: bytes, erp_df: pd.DataFrame, offset_days: int) -> Bytes
 
     # CustomerName：沿用你原来的 Market → NEW BALANCE {Market} 逻辑（US 特殊为 NEW BALANCE US）
     mkt = df["Market"].fillna("").astype(str).str.upper().str.strip()
-    df["**CustomerName"] = ["NEW BALANCE US" if m == "UNITED STATES" else f"NEW BALANCE {m}" for m in mkt]
+    df["**CustomerName"] = ["NEW BALANCE USA" if m == "UNITED STATES" else f"NEW BALANCE {m}" for m in mkt]
 
     # ===== 关键变更开始 =====
     # 1) RefNo：按 Region 映射
@@ -377,6 +377,7 @@ def route_so():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
 
 
 
